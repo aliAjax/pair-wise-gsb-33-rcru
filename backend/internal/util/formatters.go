@@ -76,7 +76,27 @@ func ReminderStatusText(s string) string {
 		return "已完成"
 	case "overdue":
 		return "已逾期"
+	case "unbound":
+		return "待确认"
 	default:
 		return "未知"
+	}
+}
+
+// ReminderFrequencyText maps a reminder frequency code to Chinese text.
+func ReminderFrequencyText(f string) string {
+	switch f {
+	case "once", "":
+		return "单次"
+	case "daily":
+		return "每日"
+	case "weekly":
+		return "每周"
+	case "monthly":
+		return "每月"
+	case "yearly":
+		return "每年"
+	default:
+		return f
 	}
 }

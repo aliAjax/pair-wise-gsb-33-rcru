@@ -75,16 +75,22 @@ func (h *UserGardenHandler) BindReminder(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.OK(g))
 }
 
-// Remove handles DELETE /gardens/:id.
+// Remove handles DELETE /gardens/:id. Unfinished reminders stop at unbound
+// (待确认); same-species pots are returned as transfer candidates.
 func (h *UserGardenHandler) Remove(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid garden id"))
 		return
 	}
-	if err := h.svc.Remove(middleware.GetUserID(c), uint(id)); err != nil {
+	targets, err := h.svc.Remove(middleware.GetUserID(c), uint(id))
+	if err != nil {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.OK(gin.H{"removed": true}))
+	c.JSON(http.StatusOK, dto.OK(gin.H{
+		"removed":          true,
+		"message":          constants.MsgGardenReminderUnbound,
+		"transfer_targets": targets,
+	}))
 }

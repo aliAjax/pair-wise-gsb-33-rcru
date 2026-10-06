@@ -58,7 +58,7 @@ func (h *CareReminderHandler) Create(c *gin.Context) {
 		return
 	}
 	m := &model.CareReminder{
-		PlantSpeciesID: req.PlantSpeciesID, TaskTitle: req.TaskTitle,
+		PlantSpeciesID: req.PlantSpeciesID, GardenID: req.GardenID, TaskTitle: req.TaskTitle,
 		RemindDate: req.RemindDate, Frequency: req.Frequency,
 	}
 	created, err := h.svc.Create(middleware.GetUserID(c), m)
@@ -69,7 +69,34 @@ func (h *CareReminderHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, dto.OK(created))
 }
 
-// UpdateStatus handles PUT /reminders/:id/status.
+// Update handles PUT /reminders/:id — changing date/frequency invalidates and
+// recomputes the next occurrence.
+func (h *CareReminderHandler) Update(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid reminder id"))
+		return
+	}
+	var req dto.ReminderUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, constants.MsgInvalidParam))
+		return
+	}
+	m, err := h.svc.Update(middleware.GetUserID(c), uint(id), service.TaskUpdateInput{
+		TaskTitle:  req.TaskTitle,
+		RemindDate: req.RemindDate,
+		Frequency:  req.Frequency,
+	})
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.OK(m))
+}
+
+// UpdateStatus handles PUT /reminders/:id/status. Marking done is idempotent:
+// a repeated completion returns the already generated next occurrence with
+// processed=true instead of creating a duplicate.
 func (h *CareReminderHandler) UpdateStatus(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
@@ -81,12 +108,76 @@ func (h *CareReminderHandler) UpdateStatus(c *gin.Context) {
 		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, constants.MsgInvalidParam))
 		return
 	}
-	m, err := h.svc.UpdateStatus(middleware.GetUserID(c), uint(id), req.Status)
+	m, alreadyProcessed, err := h.svc.UpdateStatus(middleware.GetUserID(c), uint(id), req.Status)
 	if err != nil {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.OK(m))
+	c.JSON(http.StatusOK, dto.OK(gin.H{
+		"reminder":  m,
+		"processed": alreadyProcessed,
+		"message":   statusMessage(req.Status, alreadyProcessed),
+	}))
+}
+
+func statusMessage(status string, processed bool) string {
+	if status == model.ReminderDone {
+		if processed {
+			return constants.MsgReminderProcessed
+		}
+		return constants.MsgReminderDone
+	}
+	return "ok"
+}
+
+// TransferTargets handles GET /reminders/:id/transfer-targets.
+func (h *CareReminderHandler) TransferTargets(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid reminder id"))
+		return
+	}
+	items, err := h.svc.TransferTargets(middleware.GetUserID(c), uint(id))
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.OK(items))
+}
+
+// Transfer handles POST /reminders/:id/transfer — hand an unbound reminder to
+// another pot of the same plant species.
+func (h *CareReminderHandler) Transfer(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid reminder id"))
+		return
+	}
+	var req dto.ReminderTransferRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, constants.MsgInvalidParam))
+		return
+	}
+	m, err := h.svc.Transfer(middleware.GetUserID(c), uint(id), req.GardenID)
+	if err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.OK(gin.H{"reminder": m, "message": constants.MsgReminderTransferred}))
+}
+
+// Cancel handles DELETE /reminders/:id/cancel — cancel an unbound reminder.
+func (h *CareReminderHandler) Cancel(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid reminder id"))
+		return
+	}
+	if err := h.svc.Cancel(middleware.GetUserID(c), uint(id)); err != nil {
+		c.Error(err)
+		return
+	}
+	c.JSON(http.StatusOK, dto.OK(gin.H{"canceled": true, "message": constants.MsgReminderCanceled}))
 }
 
 // Delete handles DELETE /reminders/:id.

@@ -18,6 +18,7 @@ export function useReminderStats() {
   const pending = computed(() => reminders.value.filter((r) => r.status === 'pending').length)
   const done = computed(() => reminders.value.filter((r) => r.status === 'done').length)
   const overdue = computed(() => reminders.value.filter((r) => r.status === 'overdue').length)
+  const unbound = computed(() => reminders.value.filter((r) => r.status === 'unbound').length)
 
-  return { reminders, loading, load, pending, done, overdue }
+  return { reminders, loading, load, pending, done, overdue, unbound }
 }

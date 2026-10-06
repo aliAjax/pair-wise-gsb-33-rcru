@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
+	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -11,7 +14,7 @@ import (
 )
 
 func migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&model.User{},
 		&model.PlantSpecies{},
 		&model.CareArticle{},
@@ -21,7 +24,96 @@ func migrate(db *gorm.DB) error {
 		&model.UserGarden{},
 		&model.Question{},
 		&model.Answer{},
-	)
+	); err != nil {
+		return err
+	}
+	if err := migrateReminderSchedule(db); err != nil {
+		return err
+	}
+	return migrateGardenMultiPots(db)
+}
+
+// migrateReminderSchedule backfills the series_key / frequency columns on
+// pre-existing rows and creates the indexes enforcing "one open next-occurrence
+// slot per plan per date". All index creation is idempotent so the same code
+// runs on fresh and upgraded databases.
+func migrateReminderSchedule(db *gorm.DB) error {
+	logger := slog.Default()
+
+	// 1. Normalize empty frequencies to one-shot.
+	if err := db.Exec("UPDATE care_reminders SET frequency = ? WHERE frequency IS NULL OR frequency = ''",
+		constants.FrequencyOnce).Error; err != nil {
+		return err
+	}
+
+	// 2. Backfill series_key = u{user}:g{garden}:{frequency}:{task}.
+	if err := db.Exec(
+		"UPDATE care_reminders SET series_key = CONCAT('u', user_id, ':g', garden_id, ':', frequency, ':', task_title) WHERE series_key IS NULL OR series_key = ''",
+	).Error; err != nil {
+		return err
+	}
+
+	// 3. Legacy rows created by the old double-complete bug could collide on
+	// (series_key, remind_date). Suffix the older duplicates with their id so
+	// the unique index can be built; they remain closed history rows.
+	if err := db.Exec(
+		"UPDATE care_reminders SET series_key = CONCAT(series_key, '#dup', CAST(id AS CHAR)) WHERE id NOT IN (SELECT keep_id FROM (SELECT MIN(id) AS keep_id FROM care_reminders GROUP BY series_key, remind_date) t)",
+	).Error; err != nil {
+		return err
+	}
+
+	// 4. Plain lookup indexes (ignore ER_DUP_KEYNAME 1061 on upgraded DBs).
+	for _, stmt := range []string{
+		"CREATE INDEX idx_reminders_user ON care_reminders (user_id)",
+		"CREATE INDEX idx_reminders_date ON care_reminders (remind_date)",
+		"CREATE INDEX idx_reminder_series ON care_reminders (series_key(191))",
+		"CREATE INDEX idx_reminder_series_status ON care_reminders (series_key(191), status)",
+		"CREATE INDEX idx_reminder_garden ON care_reminders (garden_id)",
+	} {
+		if err := db.Exec(stmt).Error; err != nil && !isMySQLErrorCode(err, 1061) {
+			return err
+		}
+	}
+
+	// 5. Unique backstop: one row per (plan, date), so concurrent completes can
+	// never insert two next occurrences.
+	err := db.Exec(
+		"CREATE UNIQUE INDEX uk_reminder_series_date ON care_reminders (series_key(191), remind_date)",
+	).Error
+	if err != nil && !isMySQLErrorCode(err, 1061) {
+		return err
+	}
+	if err == nil {
+		logger.Info("created unique index uk_reminder_series_date on care_reminders")
+	}
+	return nil
+}
+
+// migrateGardenMultiPots replaces the old unique (user_id, plant_species_id)
+// constraint with a plain index so a user may own multiple pots of one species.
+func migrateGardenMultiPots(db *gorm.DB) error {
+	logger := slog.Default()
+	// Drop the legacy unique index if present (ignore ER_CANT_DROP_FIELD_OR_KEY 1091).
+	if err := db.Exec("ALTER TABLE user_gardens DROP INDEX uk_garden_user_plant").Error; err != nil {
+		if !isMySQLErrorCode(err, 1091) {
+			return err
+		}
+	} else {
+		logger.Info("dropped legacy unique index uk_garden_user_plant")
+	}
+	// Ensure the plain lookup index exists on both fresh and upgraded databases.
+	if err := db.Exec("CREATE INDEX idx_garden_user_plant ON user_gardens (user_id, plant_species_id)").Error; err != nil {
+		if !isMySQLErrorCode(err, 1061) {
+			return err
+		}
+	}
+	return nil
+}
+
+// isMySQLErrorCode reports whether err is a MySQL server error with the code.
+func isMySQLErrorCode(err error, code uint16) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == code
 }
 
 func seed(db *gorm.DB) error {
@@ -78,9 +170,24 @@ func seed(db *gorm.DB) error {
 		return err
 	}
 
+	// 示例用户的花园：两盆同品种月季（用于演示转养）+ 一盆龟背竹。
+	gardens := []model.UserGarden{
+		{UserID: user.ID, PlantSpeciesID: plants[3].ID, Nickname: "阳台月季", Location: "南向阳台"},
+		{UserID: user.ID, PlantSpeciesID: plants[3].ID, Nickname: "窗台月季", Location: "客厅窗台"},
+		{UserID: user.ID, PlantSpeciesID: plants[0].ID, Nickname: "大龟背竹", Location: "客厅角落"},
+	}
+	if err := db.Create(&gardens).Error; err != nil {
+		return err
+	}
+
 	reminders := []model.CareReminder{
-		{UserID: user.ID, PlantSpeciesID: plants[3].ID, TaskTitle: "给月季补充缓释肥", Frequency: "monthly", Status: model.ReminderPending},
-		{UserID: user.ID, PlantSpeciesID: plants[0].ID, TaskTitle: "龟背竹叶片擦拭除尘", Frequency: "weekly", Status: model.ReminderPending},
+		{UserID: user.ID, PlantSpeciesID: plants[3].ID, GardenID: gardens[0].ID, TaskTitle: "给月季补充缓释肥", RemindDate: time.Now().AddDate(0, 0, 3), Frequency: constants.FrequencyMonthly, Status: model.ReminderPending},
+		{UserID: user.ID, PlantSpeciesID: plants[0].ID, GardenID: gardens[2].ID, TaskTitle: "龟背竹叶片擦拭除尘", RemindDate: time.Now().AddDate(0, 0, 1), Frequency: constants.FrequencyWeekly, Status: model.ReminderPending},
+	}
+	for i := range reminders {
+		r := &reminders[i]
+		r.SeriesKey = seriesKeySeed(user.ID, r.GardenID, r.TaskTitle, r.Frequency)
+		r.ScheduleVersion = 1
 	}
 	if err := db.Create(&reminders).Error; err != nil {
 		return err
@@ -104,6 +211,26 @@ func seed(db *gorm.DB) error {
 
 	logger.Info("gbplantwiki seed data created",
 		"users", 2, "plants", len(plants), "articles", len(articles),
-		"pests", len(pests), "reminders", len(reminders), "questions", len(questions), "answers", len(answers))
+		"pests", len(pests), "gardens", len(gardens), "reminders", len(reminders),
+		"questions", len(questions), "answers", len(answers))
 	return nil
+}
+
+// seriesKeySeed mirrors service.seriesKey for seed data.
+func seriesKeySeed(userID, gardenID uint, taskTitle, frequency string) string {
+	return "u" + itoaSeed(int(userID)) + ":g" + itoaSeed(int(gardenID)) + ":" + frequency + ":" + taskTitle
+}
+
+func itoaSeed(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
 }

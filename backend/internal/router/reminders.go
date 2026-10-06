@@ -13,6 +13,10 @@ func registerReminderRoutes(v1 *gin.RouterGroup, cfg *config.Config, h *handler.
 	reminders.GET("", h.List)
 	reminders.GET("/calendar", h.ListByMonth)
 	reminders.POST("", limiter.Limit(), h.Create)
+	reminders.PUT("/:id", h.Update)
 	reminders.PUT("/:id/status", h.UpdateStatus)
+	reminders.GET("/:id/transfer-targets", h.TransferTargets)
+	reminders.POST("/:id/transfer", h.Transfer)
+	reminders.DELETE("/:id/cancel", h.Cancel)
 	reminders.DELETE("/:id", h.Delete)
 }

@@ -1,5 +1,5 @@
 import request from '@/utils/request'
-import type { UserGarden } from '@/types/api'
+import type { GardenRemoveResult, UserGarden } from '@/types/api'
 
 export function listGardens() {
   return request.get<never, UserGarden[]>('/gardens')
@@ -14,5 +14,5 @@ export function bindReminder(id: number, careReminderId: number) {
 }
 
 export function removeGarden(id: number) {
-  return request.delete<never, { removed: boolean }>(`/gardens/${id}`)
+  return request.delete<never, GardenRemoveResult>(`/gardens/${id}`)
 }

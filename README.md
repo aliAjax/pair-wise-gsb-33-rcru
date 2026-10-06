@@ -140,18 +140,22 @@ gb-61/
 | POST | /api/v1/pests | 管理员（限流） | 新增病虫害条目 |
 | PUT | /api/v1/pests/:id | 管理员 | 更新病虫害条目 |
 | DELETE | /api/v1/pests/:id | 管理员 | 删除病虫害条目 |
-| GET | /api/v1/reminders | 登录 | 当前用户提醒列表（自动标记逾期） |
+| GET | /api/v1/reminders | 登录 | 当前用户提醒列表（自动标记逾期，含品种/盆栽来源） |
 | GET | /api/v1/reminders/calendar | 登录 | 按月查询提醒 |
-| POST | /api/v1/reminders | 登录（限流） | 创建养护提醒 |
-| PUT | /api/v1/reminders/:id/status | 登录 | 状态流转 pending/done |
+| POST | /api/v1/reminders | 登录（限流） | 创建养护提醒（每计划一个下一期位置，重复返回 409） |
+| PUT | /api/v1/reminders/:id | 登录 | 改日期/频率/任务，下一期失效重算（schedule_version+1） |
+| PUT | /api/v1/reminders/:id/status | 登录 | 状态流转；完成周期任务幂等滚动下一期，重复完成返回 processed=true |
+| GET | /api/v1/reminders/:id/transfer-targets | 登录 | 待确认提醒可转养的同品种盆栽 |
+| POST | /api/v1/reminders/:id/transfer | 登录 | 转养给同品种的另一盆 |
+| DELETE | /api/v1/reminders/:id/cancel | 登录 | 取消（删除）待确认提醒 |
 | DELETE | /api/v1/reminders/:id | 登录 | 删除提醒 |
 | GET | /api/v1/favorites | 登录 | 收藏列表 |
 | POST | /api/v1/favorites | 登录（限流） | 添加收藏 |
 | DELETE | /api/v1/favorites/:targetType/:targetId | 登录 | 取消收藏 |
-| GET | /api/v1/gardens | 登录 | 我的花园列表 |
-| POST | /api/v1/gardens | 登录（限流） | 加入我的花园 |
+| GET | /api/v1/gardens | 登录 | 我的花园列表（含品种来源、待办/待确认数量） |
+| POST | /api/v1/gardens | 登录（限流） | 加入一盆植物（同品种可多盆；恢复该品种待确认提醒） |
 | PUT | /api/v1/gardens/:id/reminder | 登录 | 关联养护提醒 |
-| DELETE | /api/v1/gardens/:id | 登录 | 移除花园条目 |
+| DELETE | /api/v1/gardens/:id | 登录 | 移出植物（事务：未完成提醒置为待确认，返回同品种转养目标；失败回滚） |
 | GET | /api/v1/questions | 公开 | 问答列表 |
 | GET | /api/v1/questions/:id | 公开 | 问题详情 |
 | GET | /api/v1/questions/:id/answers | 公开 | 问题回答列表 |
