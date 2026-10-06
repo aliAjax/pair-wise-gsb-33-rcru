@@ -11,18 +11,25 @@ import (
 	"github.com/gbplantwiki/gbplantwiki/internal/dto"
 	"github.com/gbplantwiki/gbplantwiki/internal/middleware"
 	"github.com/gbplantwiki/gbplantwiki/internal/model"
-	"github.com/gbplantwiki/gbplantwiki/internal/service"
 	"github.com/gbplantwiki/gbplantwiki/internal/util"
 )
 
 // UserGardenHandler exposes "my garden" endpoints.
 type UserGardenHandler struct {
-	svc    *service.UserGardenService
+	svc    UserGardenServiceAPI
 	logger *slog.Logger
 }
 
+// UserGardenServiceAPI is the handler-facing surface of the garden service.
+type UserGardenServiceAPI interface {
+	Add(userID uint, g *model.UserGarden) (*dto.GardenView, error)
+	List(userID uint) ([]dto.GardenView, error)
+	Remove(userID, id uint) (int64, error)
+	BindReminder(userID, gardenID, reminderID uint) (*dto.GardenView, error)
+}
+
 // NewUserGardenHandler creates a UserGardenHandler.
-func NewUserGardenHandler(svc *service.UserGardenService, logger *slog.Logger) *UserGardenHandler {
+func NewUserGardenHandler(svc UserGardenServiceAPI, logger *slog.Logger) *UserGardenHandler {
 	return &UserGardenHandler{svc: svc, logger: logger}
 }
 
@@ -75,16 +82,18 @@ func (h *UserGardenHandler) BindReminder(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.OK(g))
 }
 
-// Remove handles DELETE /gardens/:id.
+// Remove handles DELETE /gardens/:id. Open reminders are suspended to
+// awaiting_confirm in the same transaction; the response reports how many.
 func (h *UserGardenHandler) Remove(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		c.Error(util.NewAppError(http.StatusBadRequest, constants.CodeBadRequest, "invalid garden id"))
 		return
 	}
-	if err := h.svc.Remove(middleware.GetUserID(c), uint(id)); err != nil {
+	suspended, err := h.svc.Remove(middleware.GetUserID(c), uint(id))
+	if err != nil {
 		c.Error(err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.OK(gin.H{"removed": true}))
+	c.JSON(http.StatusOK, dto.OK(gin.H{"removed": true, "awaiting_reminders": suspended}))
 }

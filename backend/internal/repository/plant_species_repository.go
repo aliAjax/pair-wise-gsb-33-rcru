@@ -82,6 +82,23 @@ func (r *PlantSpeciesRepository) List(speciesType, family, keyword string, page,
 	return items, total, nil
 }
 
+// WithTx returns a repository bound to the given transaction handle.
+func (r *PlantSpeciesRepository) WithTx(tx *gorm.DB) *PlantSpeciesRepository {
+	return &PlantSpeciesRepository{db: tx}
+}
+
+// FindByIDs locates several plant species at once for view assembly.
+func (r *PlantSpeciesRepository) FindByIDs(ids []uint) ([]model.PlantSpecies, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var items []model.PlantSpecies
+	if err := r.db.Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 // ListHot returns the most recently added plants for the home page.
 func (r *PlantSpeciesRepository) ListHot(limit int) ([]model.PlantSpecies, error) {
 	var items []model.PlantSpecies

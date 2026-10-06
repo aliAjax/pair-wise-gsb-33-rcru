@@ -28,7 +28,36 @@ func TestPlantTypeText(t *testing.T) {
 }
 
 func TestReminderStatusText(t *testing.T) {
-	if got := ReminderStatusText("overdue"); got != "已逾期" {
-		t.Errorf("ReminderStatusText = %s", got)
+	cases := []struct{ in, want string }{
+		{"pending", "待处理"},
+		{"done", "已完成"},
+		{"overdue", "已逾期"},
+		{"awaiting_confirm", "待确认"},
+	}
+	for _, c := range cases {
+		if got := ReminderStatusText(c.in); got != c.want {
+			t.Errorf("ReminderStatusText(%s) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+func TestReminderFrequencyText(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"daily", "每日"},
+		{"weekly", "每周"},
+		{"monthly", "每月"},
+		{"yearly", "每年"},
+		{"", "单次"},
+	}
+	for _, c := range cases {
+		if got := ReminderFrequencyText(c.in); got != c.want {
+			t.Errorf("ReminderFrequencyText(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+func TestGardenStatusText(t *testing.T) {
+	if got := GardenStatusText("removed"); got != "已移出" {
+		t.Errorf("GardenStatusText = %s", got)
 	}
 }

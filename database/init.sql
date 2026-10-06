@@ -66,13 +66,21 @@ CREATE TABLE IF NOT EXISTS care_reminders (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,
   plant_species_id BIGINT UNSIGNED DEFAULT 0,
+  garden_id BIGINT UNSIGNED DEFAULT 0,
+  series_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  seq INT NOT NULL DEFAULT 1,
+  schedule_version INT NOT NULL DEFAULT 1,
   task_title VARCHAR(255) NOT NULL,
   remind_date DATE,
   frequency VARCHAR(32) DEFAULT '',
-  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  status VARCHAR(32) NOT NULL DEFAULT 'pending',
   created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
   KEY idx_reminders_user (user_id),
-  KEY idx_reminders_date (remind_date)
+  KEY idx_reminders_date (remind_date),
+  KEY idx_reminders_series (series_id),
+  KEY idx_reminders_garden (garden_id),
+  -- Each recurring series occupies exactly one open "next period" slot.
+  UNIQUE KEY uk_reminders_series_open (series_id, (CASE WHEN status IN ('pending','overdue','awaiting_confirm') THEN 1 ELSE NULL END))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS favorites (
@@ -92,8 +100,11 @@ CREATE TABLE IF NOT EXISTS user_gardens (
   owned_since DATE,
   location VARCHAR(128) DEFAULT '',
   care_reminder_id BIGINT UNSIGNED DEFAULT 0,
+  status VARCHAR(16) NOT NULL DEFAULT 'active',
   created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
-  UNIQUE KEY uk_garden_user_plant (user_id, plant_species_id)
+  -- A user may own several pots of the same species; plain index, not unique.
+  KEY idx_garden_user_plant (user_id, plant_species_id),
+  KEY idx_garden_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS questions (

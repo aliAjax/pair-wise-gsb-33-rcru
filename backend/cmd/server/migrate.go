@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -11,7 +12,7 @@ import (
 )
 
 func migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&model.User{},
 		&model.PlantSpecies{},
 		&model.CareArticle{},
@@ -21,7 +22,66 @@ func migrate(db *gorm.DB) error {
 		&model.UserGarden{},
 		&model.Question{},
 		&model.Answer{},
-	)
+	); err != nil {
+		return err
+	}
+	return reconcileSchema(db)
+}
+
+// reconcileSchema performs changes GORM AutoMigrate does not cover:
+//   - drop the legacy UNIQUE(user_id, plant_species_id) on user_gardens
+//     (a user may own several pots of the same species);
+//   - backfill care_reminders.series_id for rows created before the series
+//     concept existed, and add the single-open-slot functional unique index.
+//
+// Every statement is idempotent so it is safe to run on every boot; this is
+// how a partially-failed save still ends with consistent relations.
+func reconcileSchema(db *gorm.DB) error {
+	type idxRow struct {
+		KeyName string `gorm:"column:Key_name"`
+	}
+	var indexes []idxRow
+	if err := db.Raw("SHOW INDEX FROM user_gardens WHERE Key_name = 'uk_garden_user_plant'").
+		Scan(&indexes).Error; err != nil {
+		// Table layout checks are best-effort on non-MySQL drivers (tests).
+		return nil
+	}
+	if len(indexes) > 0 {
+		if err := db.Exec("ALTER TABLE user_gardens DROP INDEX uk_garden_user_plant").Error; err != nil {
+			return err
+		}
+	}
+
+	// Backfill series_id for legacy reminder rows: each old standalone row
+	// becomes its own anchored series.
+	if err := db.Exec("UPDATE care_reminders SET series_id = id WHERE series_id = 0 OR series_id IS NULL").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("UPDATE care_reminders SET schedule_version = 1 WHERE schedule_version = 0 OR schedule_version IS NULL").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("UPDATE user_gardens SET status = 'active' WHERE status = '' OR status IS NULL").Error; err != nil {
+		return err
+	}
+
+	// Functional unique index: at most one open occurrence per series.
+	var remIndexes []idxRow
+	if err := db.Raw("SHOW INDEX FROM care_reminders WHERE Key_name = 'uk_reminders_series_open'").
+		Scan(&remIndexes).Error; err != nil {
+		return nil
+	}
+	if len(remIndexes) == 0 {
+		if err := db.Exec(`ALTER TABLE care_reminders
+			ADD UNIQUE KEY uk_reminders_series_open (
+				series_id,
+				(CASE WHEN status IN ('pending','overdue','awaiting_confirm') THEN 1 ELSE NULL END)
+			)`).Error; err != nil {
+			// Pre-existing duplicate data blocks the functional index; surface
+			// it but do not crash boot, reconciliation can be retried.
+			slog.Default().Warn("care_reminders functional index add skipped", "error", err)
+		}
+	}
+	return nil
 }
 
 func seed(db *gorm.DB) error {
@@ -78,12 +138,32 @@ func seed(db *gorm.DB) error {
 		return err
 	}
 
+	now := time.Now()
 	reminders := []model.CareReminder{
-		{UserID: user.ID, PlantSpeciesID: plants[3].ID, TaskTitle: "给月季补充缓释肥", Frequency: "monthly", Status: model.ReminderPending},
-		{UserID: user.ID, PlantSpeciesID: plants[0].ID, TaskTitle: "龟背竹叶片擦拭除尘", Frequency: "weekly", Status: model.ReminderPending},
+		{
+			UserID: user.ID, PlantSpeciesID: plants[3].ID,
+			TaskTitle: "给月季补充缓释肥", RemindDate: now.AddDate(0, 0, 3),
+			Frequency: "monthly", Status: model.ReminderPending,
+			Seq: 1, ScheduleVersion: 1,
+		},
+		{
+			UserID: user.ID, PlantSpeciesID: plants[0].ID,
+			TaskTitle: "龟背竹叶片擦拭除尘", RemindDate: now.AddDate(0, 0, 1),
+			Frequency: "weekly", Status: model.ReminderPending,
+			Seq: 1, ScheduleVersion: 1,
+		},
 	}
 	if err := db.Create(&reminders).Error; err != nil {
 		return err
+	}
+	// Anchor each seed reminder to its own series (series_id == id).
+	for i := range reminders {
+		if err := db.Model(&model.CareReminder{}).
+			Where("id = ?", reminders[i].ID).
+			Update("series_id", reminders[i].ID).Error; err != nil {
+			return err
+		}
+		reminders[i].SeriesID = reminders[i].ID
 	}
 
 	questions := []model.Question{

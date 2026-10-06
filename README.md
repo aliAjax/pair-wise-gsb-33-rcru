@@ -140,18 +140,23 @@ gb-61/
 | POST | /api/v1/pests | 管理员（限流） | 新增病虫害条目 |
 | PUT | /api/v1/pests/:id | 管理员 | 更新病虫害条目 |
 | DELETE | /api/v1/pests/:id | 管理员 | 删除病虫害条目 |
-| GET | /api/v1/reminders | 登录 | 当前用户提醒列表（自动标记逾期） |
+| GET | /api/v1/reminders | 登录 | 当前用户提醒列表（自动标记逾期，带品种来源/盆位状态） |
 | GET | /api/v1/reminders/calendar | 登录 | 按月查询提醒 |
-| POST | /api/v1/reminders | 登录（限流） | 创建养护提醒 |
-| PUT | /api/v1/reminders/:id/status | 登录 | 状态流转 pending/done |
+| GET | /api/v1/reminders/awaiting | 登录 | 移出植物后待确认的提醒 + 同品种可转入盆 |
+| POST | /api/v1/reminders | 登录（限流） | 创建养护提醒（自动锚定 series_id） |
+| PUT | /api/v1/reminders/:id | 登录 | 改任务/日期/频率，下一期失效重算 |
+| PUT | /api/v1/reminders/:id/status | 登录 | 状态流转 pending/done（done 走幂等完成） |
+| POST | /api/v1/reminders/:id/complete | 登录 | 幂等完成：仅生成一条下一期，重复完成返回 processed=false |
 | DELETE | /api/v1/reminders/:id | 登录 | 删除提醒 |
 | GET | /api/v1/favorites | 登录 | 收藏列表 |
 | POST | /api/v1/favorites | 登录（限流） | 添加收藏 |
 | DELETE | /api/v1/favorites/:targetType/:targetId | 登录 | 取消收藏 |
-| GET | /api/v1/gardens | 登录 | 我的花园列表 |
-| POST | /api/v1/gardens | 登录（限流） | 加入我的花园 |
-| PUT | /api/v1/gardens/:id/reminder | 登录 | 关联养护提醒 |
-| DELETE | /api/v1/gardens/:id | 登录 | 移除花园条目 |
+| GET | /api/v1/gardens | 登录 | 我的花园列表（带品种来源/状态） |
+| POST | /api/v1/gardens | 登录（限流） | 加入我的花园（同品种可多盆） |
+| PUT | /api/v1/gardens/:id/reminder | 登录 | 关联养护提醒（事务+同品种校验） |
+| DELETE | /api/v1/gardens/:id | 登录 | 移出植物（事务：盆位置 removed + 未完成提醒置 awaiting_confirm，失败回滚恢复） |
+| DELETE | /api/v1/gardens/:id/reminders/awaiting | 登录 | 取消该移出盆的待确认提醒 |
+| POST | /api/v1/gardens/:id/reminders/transfer | 登录（限流） | 把待确认提醒转给同品种的另一盆 |
 | GET | /api/v1/questions | 公开 | 问答列表 |
 | GET | /api/v1/questions/:id | 公开 | 问题详情 |
 | GET | /api/v1/questions/:id/answers | 公开 | 问题回答列表 |
@@ -160,6 +165,21 @@ gb-61/
 | PUT | /api/v1/questions/:id/adopt | 登录 | 采纳最佳回答（事务：清旧最佳+标最佳+关闭问题） |
 | PUT | /api/v1/answers/:id/like | 登录 | 回答点赞 |
 | POST | /api/v1/uploads | 登录（限流） | 上传图片 |
+
+## 养护提醒系列（series）语义
+
+「我的花园 × 养护提醒 × 植物品种」三者打通后的核心规则：
+
+1. **一条频率一个下一期**：每条提醒属于一个系列（`series_id`，首期 `series_id = id`）。重复型提醒（daily/weekly/monthly/yearly）完成时只生成**一条**下一期；单次提醒不生成下一期。数据库用函数唯一索引
+   `uk_reminders_series_open(series_id, CASE WHEN status IN ('pending','overdue','awaiting_confirm') THEN 1 END)`
+   保证每个系列至多一个未完成占位。
+2. **重复完成返回已处理**：`POST /reminders/:id/complete` 用条件 UPDATE 兜底多窗口/双击并发——只有一次请求匹配到行并生成下一期，其余返回 `processed=false`、`message="该提醒已处理，下一期已生成，请勿重复完成"`。
+3. **改日期/频率后下一期失效重算**：`PUT /reminders/:id` 提升 `schedule_version`，删除旧的待执行下一期并按新锚点日期/频率重建；编辑中的就是当前占位时直接原地改写。
+4. **植物移出后未完成提醒停在待确认**：`DELETE /gardens/:id` 在一个事务内把盆位置 `removed`、把该盆的 pending/overdue 提醒置为 `awaiting_confirm`（保留品种与系列关联）。随后可：
+   - 取消：`DELETE /gardens/:id/reminders/awaiting`
+   - 转给同品种另一盆：`POST /gardens/:id/reminders/transfer`（校验目标盆同品种、本人、active）
+5. **失败可恢复**：移出、转移、绑定全部走数据库事务，任何一步失败整体回滚，盆位恢复 `active`、提醒关系恢复原状。
+6. **界面显示来源与状态**：提醒列表/花园列表都拼装品种名（`plant_name`）、品种类型、盆位昵称（`garden_name`）、位置与盆位状态（`garden_status`），待确认提醒在花园页顶部聚合处理。
 
 ## 枚举出现位置清单
 
@@ -177,6 +197,11 @@ gb-61/
 
 - 后端：`backend/internal/constants/favorite.go`（定义）、`backend/internal/model/favorite.go`（模型）、`backend/internal/service/favorite_service.go`（校验）、`backend/internal/constants/log_templates.go`、`database/init.sql`
 - 前端：`frontend/src/constants/favorite.ts`（定义）、`frontend/src/components/common/FavoriteButton.vue`（交互）、`frontend/src/pages/Garden.vue` 与 `frontend/src/pages/Profile.vue`（收藏夹列表）
+
+### CareReminder 状态机（pending/done/overdue/awaiting_confirm）与频率（daily/weekly/monthly/yearly）
+
+- 后端：`backend/internal/model/care_reminder.go`（状态与频率常量、`IsOpen`）、`backend/internal/service/care_reminder_service.go`（幂等完成/下一期/改期重算/挂起/转移状态机）、`backend/internal/service/reminder_schedule.go`（`nextRemindDate`/`isValidFrequency`）、`backend/internal/repository/care_reminder_repository.go`（条件 UPDATE、系列查询）、`backend/internal/util/formatters.go`（ReminderStatusText/ReminderFrequencyText/GardenStatusText）、`backend/internal/constants/log_templates.go`（完成/重复/下一期/转移日志）、`backend/internal/constants/messages.go`（已处理/待确认文案）、`database/init.sql`（status 列、函数唯一索引）
+- 前端：`frontend/src/constants/reminder.ts`（频率/状态文本与标签颜色）、`frontend/src/types/api.ts`（ReminderStatus 联合类型）、`frontend/src/components/common/ReminderList.vue`（按钮显隐、状态标签、改期）、`frontend/src/components/common/AwaitingReminders.vue`（待确认取消/转移）、`frontend/src/pages/Garden.vue` 与 `frontend/src/pages/SeasonCalendar.vue`（完成/改期交互）、`frontend/src/hooks/useReminderStats.ts`（awaiting 统计）
 
 ## 横切关注点
 

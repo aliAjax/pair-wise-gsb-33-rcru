@@ -22,15 +22,39 @@ export interface UserInfo {
   created_at: string
 }
 
+export type ReminderStatus = 'pending' | 'done' | 'overdue' | 'awaiting_confirm'
+
+export type ReminderFrequency = '' | 'daily' | 'weekly' | 'monthly' | 'yearly'
+
 export interface CareReminder {
   id: number
   user_id: number
   plant_species_id: number
+  garden_id: number
+  series_id: number
+  seq: number
+  schedule_version: number
   task_title: string
   remind_date: string
   frequency: string
-  status: 'pending' | 'done' | 'overdue'
+  status: ReminderStatus
   created_at: string
+
+  // joined plant source + pot status
+  plant_name?: string
+  plant_type?: string
+  plant_alias?: string
+  garden_name?: string
+  location?: string
+  garden_status?: 'active' | 'removed' | ''
+  source_label?: string
+}
+
+export interface ReminderCompleteResult {
+  reminder: CareReminder
+  processed: boolean
+  next_reminder_id: number
+  message: string
 }
 
 export interface UserGarden {
@@ -41,7 +65,24 @@ export interface UserGarden {
   owned_since: string
   location: string
   care_reminder_id: number
+  status: 'active' | 'removed'
   created_at: string
+
+  // joined plant source
+  plant_name?: string
+  plant_type?: string
+  plant_alias?: string
+  origin?: string
+  family?: string
+  genus?: string
+  display_label?: string
+}
+
+// A removed pot together with its awaiting reminders and same-species targets.
+export interface RemovedGardenGroup {
+  garden: UserGarden
+  reminders: CareReminder[]
+  targets: UserGarden[]
 }
 
 export interface DiseasePest {

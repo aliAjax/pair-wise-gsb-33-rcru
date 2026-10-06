@@ -76,6 +76,38 @@ func ReminderStatusText(s string) string {
 		return "已完成"
 	case "overdue":
 		return "已逾期"
+	case "awaiting_confirm":
+		return "待确认"
+	default:
+		return "未知"
+	}
+}
+
+// ReminderFrequencyText maps a reminder frequency code to Chinese text.
+func ReminderFrequencyText(f string) string {
+	switch f {
+	case "daily":
+		return "每日"
+	case "weekly":
+		return "每周"
+	case "monthly":
+		return "每月"
+	case "yearly":
+		return "每年"
+	case "":
+		return "单次"
+	default:
+		return f
+	}
+}
+
+// GardenStatusText maps a garden pot status to Chinese text.
+func GardenStatusText(s string) string {
+	switch s {
+	case "active":
+		return "养护中"
+	case "removed":
+		return "已移出"
 	default:
 		return "未知"
 	}
